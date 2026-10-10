@@ -1,0 +1,143 @@
+diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
+index c1d5f6c..5ac8bd2 100644
+--- a/pkg/tutk/dtls/conn_dtls.go
++++ b/pkg/tutk/dtls/conn_dtls.go
+@@ -1,6 +1,7 @@
+ package dtls
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"crypto/hmac"
+ 	"crypto/sha1"
+@@ -8,7 +9,11 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"net"
++	"os"
++	"strconv"
++	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/AlexxIT/go2rtc/pkg/tutk"
+@@ -96,6 +101,7 @@ type DTLSConn struct {
+ 	sid                []byte
+ 	ticket             uint16
+ 	hasTwoWayStreaming bool
++	natted             bool // camera is seen via a NAT-rewritten address
+ 
+ 	// Protocol
+ 	isCC51       bool
+@@ -115,7 +121,7 @@ type DTLSConn struct {
+ }
+ 
+ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
+-	udp, err := net.ListenUDP("udp", nil)
++	udp, err := listenUDP()
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -167,6 +173,45 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*D
+ 	return c, nil
+ }
+ 
++// listenUDP opens the local socket for a camera session. By default the OS
++// picks an ephemeral port. When GO2RTC_WYZE_UDP_PORTS is set ("40000-40015"
++// or "40000"), the first free port in that range is used instead, so the
++// ports can be published from a container that is not on the camera's LAN
++// (Docker Desktop / OrbStack on macOS and Windows).
++func listenUDP() (*net.UDPConn, error) {
++	first, last, ok := udpPortRange(os.Getenv("GO2RTC_WYZE_UDP_PORTS"))
++	if !ok {
++		return net.ListenUDP("udp", nil)
++	}
++	// Rotate through the range: the camera of a just-closed session keeps
++	// sending for a while, so don't hand its port to the next session.
++	size := last - first + 1
++	for i := 0; i < size; i++ {
++		port := first + int(udpPortNext.Add(1)-1)%size
++		if udp, err := net.ListenUDP("udp", &net.UDPAddr{Port: port}); err == nil {
++			return udp, nil
++		}
++	}
++	return nil, fmt.Errorf("no free UDP port in GO2RTC_WYZE_UDP_PORTS=%d-%d", first, last)
++}
++
++var udpPortNext atomic.Uint32
++
++func udpPortRange(s string) (first, last int, ok bool) {
++	lo, hi, isRange := strings.Cut(strings.TrimSpace(s), "-")
++	first, err := strconv.Atoi(lo)
++	if err != nil {
++		return 0, 0, false
++	}
++	last = first
++	if isRange {
++		if last, err = strconv.Atoi(hi); err != nil {
++			return 0, 0, false
++		}
++	}
++	return first, last, first > 0 && first <= last && last <= 65535
++}
++
+ func (c *DTLSConn) AVClientStart(timeout time.Duration) error {
+ 	randomID := tutk.GenSessionID()
+ 	pkt1 := c.msgAVLogin(magicAVLogin1, 570, 0x0001, randomID)
+@@ -393,6 +438,9 @@ func (c *DTLSConn) WriteAndWait(req []byte, ok func(res []byte) bool) ([]byte, e
+ 		if string(addr.IP) != string(c.addr.IP) || n < 16 {
+ 			continue
+ 		}
++		if c.natted && addr.Port != c.addr.Port {
++			continue
++		}
+ 
+ 		var res []byte
+ 		if c.isCC51 {
+@@ -514,13 +562,19 @@ func (c *DTLSConn) discovery() error {
+ 		if err != nil {
+ 			continue
+ 		}
+-		if !addr.IP.Equal(c.addr.IP) {
+-			continue
+-		}
++		// Some cameras (ex. HL_CFL2) reply from another port than the one we
++		// sent to. A userspace NAT (Docker Desktop, OrbStack) can't match such
++		// a reply to our flow and delivers it with a rewritten source IP.
++		// Trust it only if it is a response echoing our session ID.
++		sameIP := addr.IP.Equal(c.addr.IP)
+ 
+ 		// CC51 protocol
+ 		if n >= packetSizeCC51 && string(buf[:2]) == magicCC51 {
++			if !sameIP && (binary.LittleEndian.Uint16(buf[8:]) != 0xFFFF || !bytes.Equal(buf[16:24], c.sid)) {
++				continue
++			}
+ 			if binary.LittleEndian.Uint16(buf[4:]) == cmdDiscoCC51 {
++				c.natted = !sameIP
+ 				c.addr, c.isCC51, c.ticket = addr, true, binary.LittleEndian.Uint16(buf[14:])
+ 				if n >= 24 {
+ 					copy(c.sid, buf[16:24])
+@@ -530,6 +584,10 @@ func (c *DTLSConn) discovery() error {
+ 			continue
+ 		}
+ 
++		if !sameIP {
++			continue
++		}
++
+ 		// IOTC Protocol (Basis)
+ 		data := tutk.ReverseTransCodeBlob(buf[:n])
+ 		if len(data) >= 16 && binary.LittleEndian.Uint16(data[8:]) == cmdDiscoRes {
+@@ -674,6 +732,11 @@ func (c *DTLSConn) reader() {
+ 			continue
+ 		}
+ 		if addr.Port != c.addr.Port {
++			// Behind a NAT all cameras share one source IP and differ only
++			// by port, so another port is another camera, not a port change.
++			if c.natted {
++				continue
++			}
+ 			c.addr.Port = addr.Port
+ 		}
+ 
