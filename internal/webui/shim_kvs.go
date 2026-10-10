@@ -33,7 +33,11 @@ func (s *Server) SetKVSProvider(p KVSStreamProvider) {
 //
 //	{"ClientId":"<phone_id>","cam":"<name>","result":"ok",
 //	 "servers":[{"url":...,"username":...,"credential":...}],
-//	 "signalingUrl":"wss://wyze-mars-webcsrv.wyzecam.com?token=..."}
+//	 "signalingUrl":"wss://wyze-mars-webcsrv.wyzecam.com?token=...",
+//	 "profile":"2k"}
+//
+// "profile" is optional and only understood by a go2rtc built with
+// docker/patches/go2rtc-wyze-webrtc-profile.patch; stock go2rtc ignores it.
 //
 // ClientId's capital I matters — that's what go2rtc's wyzeKVS struct
 // tag wants. go2rtc handles everything downstream (WSS dial, SDP
@@ -85,6 +89,28 @@ func (s *Server) handleShimKVSSignaling(w http.ResponseWriter, r *http.Request) 
 		"servers":      iceServers,
 		"signalingUrl": signalingURL,
 	}
+	if profile := kvsVideoProfile(info.Model, cam.GetQuality()); profile != "" {
+		payload["profile"] = profile
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// kvsVideoProfile returns the video profile go2rtc should request from
+// the camera over the Wyze WebRTC data channel, or "" to keep the
+// camera's default. Wyze cameras start a WebRTC session at their lowest
+// resolution (HL_CFL2: 640x360) and only go higher when the viewer sends
+// a "switch resolution" command, which is what the Wyze app does.
+//
+// Profile names are model specific and a wrong one stalls the video, so
+// only models verified against a real camera are listed.
+func kvsVideoProfile(model, quality string) string {
+	if strings.HasPrefix(strings.ToLower(quality), "sd") {
+		return ""
+	}
+	switch model {
+	case "HL_CFL2": // Floodlight V2: "2k" = 2304x1296
+		return "2k"
+	}
+	return ""
 }

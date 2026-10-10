@@ -1,0 +1,68 @@
+diff --git a/internal/webrtc/kinesis.go b/internal/webrtc/kinesis.go
+index 8bfaeb9..78796fe 100644
+--- a/internal/webrtc/kinesis.go
++++ b/internal/webrtc/kinesis.go
+@@ -111,6 +111,16 @@ func kinesisClient(
+ 		}
+ 	})
+ 
++	// Wyze cameras start at their lowest resolution (ex. 360p). The Wyze app
++	// switches it with a JSON command over a data channel.
++	if profile := query.Get("wyze_profile"); profile != "" {
++		if dc, err := pc.CreateDataChannel("wyzeWebRTCDataChannel", nil); err == nil {
++			go wyzeSwitchProfile(dc, profile)
++		} else {
++			log.Warn().Err(err).Caller().Send()
++		}
++	}
++
+ 	var payload any
+ 
+ 	if sdpOffer == nil {
+@@ -203,6 +213,36 @@ type wyzeKVS struct {
+ 	Result   string          `json:"result"`
+ 	Servers  json.RawMessage `json:"servers"`
+ 	URL      string          `json:"signalingUrl"`
++	Profile  string          `json:"profile"` // optional video profile, ex. "2k"
++}
++
++// wyzeSwitchProfile asks the camera for another video profile once the data
++// channel is open. Profile names are model specific (HL_CFL2: "360p", "2k").
++func wyzeSwitchProfile(dc *pion.DataChannel, profile string) {
++	for i := 0; dc.ReadyState() != pion.DataChannelStateOpen; i++ {
++		if i == 100 || dc.ReadyState() == pion.DataChannelStateClosed {
++			log.Warn().Msgf("[webrtc] wyze data channel not open, profile=%s not set", profile)
++			return
++		}
++		time.Sleep(100 * time.Millisecond)
++	}
++
++	dc.OnMessage(func(msg pion.DataChannelMessage) {
++		log.Debug().Msgf("[webrtc] wyze recv: %s", msg.Data)
++	})
++
++	req, _ := json.Marshal(map[string]any{
++		"function":    "switch",
++		"version":     1,
++		"interface":   "resolution",
++		"resource_id": time.Now().UnixMilli(),
++		"payload":     map[string]string{"profile": profile},
++	})
++	if err := dc.SendText(string(req)); err != nil {
++		log.Warn().Err(err).Caller().Send()
++		return
++	}
++	log.Debug().Msgf("[webrtc] wyze send: %s", req)
+ }
+ 
+ func wyzeClient(rawURL string) (core.Producer, error) {
+@@ -230,6 +270,9 @@ func wyzeClient(rawURL string) (core.Producer, error) {
+ 		"client_id":   []string{kvs.ClientId},
+ 		"ice_servers": []string{string(kvs.Servers)},
+ 	}
++	if kvs.Profile != "" {
++		query.Set("wyze_profile", kvs.Profile)
++	}
+ 
+ 	return kinesisClient(kvs.URL, query, "webrtc/wyze", nil)
+ }
