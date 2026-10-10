@@ -1,5 +1,5 @@
 diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
-index c1d5f6c..5ac8bd2 100644
+index c1d5f6c..6e88b64 100644
 --- a/pkg/tutk/dtls/conn_dtls.go
 +++ b/pkg/tutk/dtls/conn_dtls.go
 @@ -1,6 +1,7 @@
@@ -22,7 +22,16 @@ index c1d5f6c..5ac8bd2 100644
  	"time"
  
  	"github.com/AlexxIT/go2rtc/pkg/tutk"
-@@ -96,6 +101,7 @@ type DTLSConn struct {
+@@ -58,6 +63,8 @@ const (
+ 	magicAVLogin2    uint16 = 0x2000
+ )
+ 
++const silenceTimeout = 15 * time.Second
++
+ const (
+ 	protoVersion uint16 = 0x000c
+ 	defaultCaps  uint32 = 0x001f07fb
+@@ -96,6 +103,7 @@ type DTLSConn struct {
  	sid                []byte
  	ticket             uint16
  	hasTwoWayStreaming bool
@@ -30,7 +39,7 @@ index c1d5f6c..5ac8bd2 100644
  
  	// Protocol
  	isCC51       bool
-@@ -115,7 +121,7 @@ type DTLSConn struct {
+@@ -115,7 +123,7 @@ type DTLSConn struct {
  }
  
  func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
@@ -39,7 +48,7 @@ index c1d5f6c..5ac8bd2 100644
  	if err != nil {
  		return nil, err
  	}
-@@ -167,6 +173,45 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*D
+@@ -167,6 +175,45 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*D
  	return c, nil
  }
  
@@ -85,17 +94,17 @@ index c1d5f6c..5ac8bd2 100644
  func (c *DTLSConn) AVClientStart(timeout time.Duration) error {
  	randomID := tutk.GenSessionID()
  	pkt1 := c.msgAVLogin(magicAVLogin1, 570, 0x0001, randomID)
-@@ -393,6 +438,9 @@ func (c *DTLSConn) WriteAndWait(req []byte, ok func(res []byte) bool) ([]byte, e
+@@ -393,6 +440,9 @@ func (c *DTLSConn) WriteAndWait(req []byte, ok func(res []byte) bool) ([]byte, e
  		if string(addr.IP) != string(c.addr.IP) || n < 16 {
  			continue
  		}
-+		if c.natted && addr.Port != c.addr.Port {
++		if c.natted && addr.Port != c.addr.Port && !c.hasSessionID(buf[:n]) {
 +			continue
 +		}
  
  		var res []byte
  		if c.isCC51 {
-@@ -514,13 +562,19 @@ func (c *DTLSConn) discovery() error {
+@@ -514,13 +564,19 @@ func (c *DTLSConn) discovery() error {
  		if err != nil {
  			continue
  		}
@@ -118,7 +127,7 @@ index c1d5f6c..5ac8bd2 100644
  				c.addr, c.isCC51, c.ticket = addr, true, binary.LittleEndian.Uint16(buf[14:])
  				if n >= 24 {
  					copy(c.sid, buf[16:24])
-@@ -530,6 +584,10 @@ func (c *DTLSConn) discovery() error {
+@@ -530,6 +586,10 @@ func (c *DTLSConn) discovery() error {
  			continue
  		}
  
@@ -129,15 +138,58 @@ index c1d5f6c..5ac8bd2 100644
  		// IOTC Protocol (Basis)
  		data := tutk.ReverseTransCodeBlob(buf[:n])
  		if len(data) >= 16 && binary.LittleEndian.Uint16(data[8:]) == cmdDiscoRes {
-@@ -674,6 +732,11 @@ func (c *DTLSConn) reader() {
+@@ -541,6 +601,15 @@ func (c *DTLSConn) discovery() error {
+ 	return fmt.Errorf("discovery timeout")
+ }
+ 
++// hasSessionID reports whether a CC51 packet belongs to this session. The
++// session ID is at offset 16 (disco, DTLS data) or 20 (keepalive).
++func (c *DTLSConn) hasSessionID(b []byte) bool {
++	if len(b) < 28 || string(b[:2]) != magicCC51 {
++		return false
++	}
++	return bytes.Equal(b[16:24], c.sid) || bytes.Equal(b[20:28], c.sid)
++}
++
+ func (c *DTLSConn) discoDone() error {
+ 	c.Write(c.msgDisco(2))
+ 	time.Sleep(100 * time.Millisecond)
+@@ -650,6 +719,7 @@ func (c *DTLSConn) reader() {
+ 	defer c.wg.Done()
+ 
+ 	buf := make([]byte, 2048)
++	lastRx := time.Now()
+ 
+ 	for {
+ 		select {
+@@ -662,6 +732,14 @@ func (c *DTLSConn) reader() {
+ 		n, addr, err := c.conn.ReadFromUDP(buf)
+ 		if err != nil {
+ 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
++				// The short read deadline above replaces any deadline set
++				// by the producer, so a camera that goes silent would never
++				// be noticed. Drop the session so it can be redialed.
++				if time.Since(lastRx) > silenceTimeout {
++					c.err = fmt.Errorf("no data from camera for %s", silenceTimeout)
++					c.cancel()
++					return
++				}
+ 				continue
+ 			}
+ 			return
+@@ -674,8 +752,15 @@ func (c *DTLSConn) reader() {
  			continue
  		}
  		if addr.Port != c.addr.Port {
-+			// Behind a NAT all cameras share one source IP and differ only
-+			// by port, so another port is another camera, not a port change.
-+			if c.natted {
++			// Behind a NAT all cameras share one source IP, and the NAT may
++			// move a camera to another port mid-session. Follow the port
++			// only for packets that carry our session ID.
++			if c.natted && !c.hasSessionID(buf[:n]) {
 +				continue
 +			}
  			c.addr.Port = addr.Port
  		}
++		lastRx = time.Now()
  
+ 		// CC51 Protocol
+ 		if c.isCC51 && n >= 12 && string(buf[:2]) == magicCC51 {
