@@ -291,7 +291,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	// have an active RTSP publisher we'd disrupt (and HealthCheck
 	// already excludes Gwell, so we don't get here for them anyway).
 	if protocol != "gwell" {
-		_ = go2rtc.DeleteStream(ctx, cam.Name())
+		m.deleteStreams(ctx, go2rtc, cam.Name())
 	}
 
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
@@ -308,11 +308,43 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		return
 	}
 
+	// The HD twin is best-effort: go2rtc only dials it while someone is
+	// watching, and the main stream works without it.
+	if hdURL := m.hdStreamSourceFor(cam); hdURL != "" {
+		if err := go2rtc.AddStream(ctx, cam.Name()+HDStreamSuffix, hdURL); err != nil {
+			m.log.Warn().Err(err).Str("cam", cam.Name()).Msg("failed to add HD stream to go2rtc")
+		}
+	}
+
 	m.log.Info().
 		Str("cam", cam.Name()).
 		Str("protocol", protocol).
 		Msg("camera connected successfully")
 	m.changeState(cam, StateStreaming)
+}
+
+// HDStreamSuffix names a camera's on-demand high-resolution stream:
+// "<cam>_hd" next to "<cam>".
+const HDStreamSuffix = "_hd"
+
+// hdStreamSourceFor returns the go2rtc source for a camera's on-demand
+// high-resolution stream, or "" when it has none. Only WebRTC cameras
+// with a known HD profile get one: several of them streaming their
+// highest resolution at once can exceed what a shared 2.4 GHz link
+// carries, so the main stream can stay small (QUALITY=sd) for a
+// multi-camera view while "<cam>_hd" is pulled for one camera at a time.
+func (m *Manager) hdStreamSourceFor(cam *Camera) string {
+	info := cam.GetInfo()
+	if !(cam.ForceWebRTC() || info.IsWebRTCStreamer()) || info.WebRTCHDProfile() == "" {
+		return ""
+	}
+	return fmt.Sprintf("webrtc:http://127.0.0.1:%d/internal/wyze/webrtc/%s%s#format=wyze", m.cfg.BridgePort, cam.Name(), HDStreamSuffix)
+}
+
+// deleteStreams removes a camera's stream and its HD twin from go2rtc.
+func (m *Manager) deleteStreams(ctx context.Context, go2rtc *go2rtcmgr.APIClient, name string) {
+	_ = go2rtc.DeleteStream(ctx, name)
+	_ = go2rtc.DeleteStream(ctx, name+HDStreamSuffix)
 }
 
 // streamSourceFor returns the go2rtc source URL and a label for the
@@ -458,7 +490,7 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 			Str("mac", info.MAC).
 			Msg("camera rename detected, dropping orphan entry")
 		if go2rtc := m.go2rtcClient(); go2rtc != nil {
-			_ = go2rtc.DeleteStream(ctx, oldName)
+			m.deleteStreams(ctx, go2rtc, oldName)
 		}
 		delete(m.cameras, oldName)
 	}
@@ -512,9 +544,11 @@ func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
 	if go2rtc == nil {
 		return nil
 	}
-	// Remove and re-add in go2rtc with new URL
+	// Remove and re-add in go2rtc with the new URL. Use the same source
+	// the camera connects with, so a WebRTC camera stays on WebRTC.
 	_ = go2rtc.DeleteStream(ctx, name)
-	return go2rtc.AddStream(ctx, name, cam.StreamURL())
+	streamURL, _ := m.streamSourceFor(cam)
+	return go2rtc.AddStream(ctx, name, streamURL)
 }
 
 // RestartStream forces a camera reconnect.
@@ -525,7 +559,7 @@ func (m *Manager) RestartStream(ctx context.Context, name string) {
 	}
 
 	if go2rtc := m.go2rtcClient(); go2rtc != nil {
-		_ = go2rtc.DeleteStream(ctx, name)
+		m.deleteStreams(ctx, go2rtc, name)
 	}
 	m.changeState(cam, StateOffline)
 	m.connectCamera(ctx, cam)
@@ -551,7 +585,7 @@ func (m *Manager) StopStream(ctx context.Context, name string) {
 		return
 	}
 	if go2rtc := m.go2rtcClient(); go2rtc != nil {
-		_ = go2rtc.DeleteStream(ctx, name)
+		m.deleteStreams(ctx, go2rtc, name)
 	}
 	m.changeState(cam, StateOffline)
 }

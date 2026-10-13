@@ -216,6 +216,23 @@ func (c CameraInfo) IsWebRTCStreamer() bool {
 	return false
 }
 
+// WebRTCHDProfile returns the name of the camera's high-resolution
+// video profile on the Wyze WebRTC data channel, or "" when the model
+// has none we know of. Wyze cameras start a WebRTC session at their
+// lowest resolution (HL_CFL2: 640x360) and only go higher when the
+// viewer sends a "switch resolution" command, which is what the Wyze
+// app and web viewer do.
+//
+// Profile names are model specific and a wrong one stalls the video,
+// so only models verified against a real camera are listed.
+func (c CameraInfo) WebRTCHDProfile() string {
+	switch c.Model {
+	case "HL_CFL2": // Floodlight V2 offers exactly "360p" and "2k" (2304x1296)
+		return "2k"
+	}
+	return ""
+}
+
 // IsPanCam returns true if this is a pan/tilt camera.
 func (c CameraInfo) IsPanCam() bool {
 	return modelRegistry[c.Model].IsPan

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 )
 
 // KVSStreamProvider mints the Wyze WebRTC signaling URL + ICE servers
@@ -54,12 +56,23 @@ func (s *Server) handleShimKVSSignaling(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// "<cam>_hd" is the on-demand high-resolution twin of "<cam>".
 	cam := s.camMgr.GetCamera(streamID)
+	hd := false
+	if cam == nil {
+		if base, ok := strings.CutSuffix(streamID, camera.HDStreamSuffix); ok {
+			cam, hd = s.camMgr.GetCamera(base), true
+		}
+	}
 	if cam == nil {
 		http.NotFound(w, r)
 		return
 	}
 	info := cam.GetInfo()
+	if hd && info.WebRTCHDProfile() == "" {
+		http.NotFound(w, r)
+		return
+	}
 	// Camera.ForceWebRTC lets the manager promote a runtime-flipped
 	// camera (see TUTK→WebRTC auto-fallback) even when the registry
 	// still marks the model as TUTK-only.
@@ -89,7 +102,11 @@ func (s *Server) handleShimKVSSignaling(w http.ResponseWriter, r *http.Request) 
 		"servers":      iceServers,
 		"signalingUrl": signalingURL,
 	}
-	if profile := kvsVideoProfile(info.Model, cam.GetQuality()); profile != "" {
+	profile := kvsVideoProfile(info.WebRTCHDProfile(), cam.GetQuality())
+	if hd {
+		profile = info.WebRTCHDProfile()
+	}
+	if profile != "" {
 		payload["profile"] = profile
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -97,20 +114,12 @@ func (s *Server) handleShimKVSSignaling(w http.ResponseWriter, r *http.Request) 
 }
 
 // kvsVideoProfile returns the video profile go2rtc should request from
-// the camera over the Wyze WebRTC data channel, or "" to keep the
-// camera's default. Wyze cameras start a WebRTC session at their lowest
-// resolution (HL_CFL2: 640x360) and only go higher when the viewer sends
-// a "switch resolution" command, which is what the Wyze app does.
-//
-// Profile names are model specific and a wrong one stalls the video, so
-// only models verified against a real camera are listed.
-func kvsVideoProfile(model, quality string) string {
+// the camera over the Wyze WebRTC data channel for the camera's main
+// stream, or "" to keep the camera's default (lowest) resolution.
+// hdProfile is the model's CameraInfo.WebRTCHDProfile.
+func kvsVideoProfile(hdProfile, quality string) string {
 	if strings.HasPrefix(strings.ToLower(quality), "sd") {
 		return ""
 	}
-	switch model {
-	case "HL_CFL2": // Floodlight V2: "2k" = 2304x1296
-		return "2k"
-	}
-	return ""
+	return hdProfile
 }
