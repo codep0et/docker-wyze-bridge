@@ -1,8 +1,16 @@
 diff --git a/internal/webrtc/kinesis.go b/internal/webrtc/kinesis.go
-index 8bfaeb9..78796fe 100644
+index 8bfaeb9..9cdd989 100644
 --- a/internal/webrtc/kinesis.go
 +++ b/internal/webrtc/kinesis.go
-@@ -111,6 +111,16 @@ func kinesisClient(
+@@ -7,6 +7,7 @@ import (
+ 	"io"
+ 	"net/http"
+ 	"net/url"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/AlexxIT/go2rtc/pkg/core"
+@@ -111,6 +112,16 @@ func kinesisClient(
  		}
  	})
  
@@ -19,13 +27,38 @@ index 8bfaeb9..78796fe 100644
  	var payload any
  
  	if sdpOffer == nil {
-@@ -203,6 +213,36 @@ type wyzeKVS struct {
+@@ -190,22 +201,102 @@ func kinesisClient(
+ 		connState.Done(err)
+ 	}()
+ 
++	// Without this a camera that never answers (or an ICE exchange that
++	// never settles) leaves the dial waiting forever, and go2rtc will not
++	// start another one for the same stream.
++	timeout := time.AfterFunc(kinesisConnectTimeout, func() {
++		connState.Done(errors.New("webrtc: connect timeout"))
++	})
++	defer timeout.Stop()
++
+ 	if err = connState.Wait(); err != nil {
++		_ = pc.Close()
+ 		return nil, err
+ 	}
+ 
+ 	return prod, nil
+ }
+ 
++const kinesisConnectTimeout = 8 * time.Second
++
+ type wyzeKVS struct {
+ 	ClientId string          `json:"ClientId"`
+ 	Cam      string          `json:"cam"`
  	Result   string          `json:"result"`
  	Servers  json.RawMessage `json:"servers"`
  	URL      string          `json:"signalingUrl"`
 +	Profile  string          `json:"profile"` // optional video profile, ex. "2k"
-+}
-+
+ }
+ 
+-func wyzeClient(rawURL string) (core.Producer, error) {
 +// wyzeSwitchProfile asks the camera for another video profile once the data
 +// channel is open. Profile names are model specific (HL_CFL2: "360p", "2k").
 +func wyzeSwitchProfile(dc *pion.DataChannel, profile string) {
@@ -53,10 +86,52 @@ index 8bfaeb9..78796fe 100644
 +		return
 +	}
 +	log.Debug().Msgf("[webrtc] wyze send: %s", req)
- }
- 
- func wyzeClient(rawURL string) (core.Producer, error) {
-@@ -230,6 +270,9 @@ func wyzeClient(rawURL string) (core.Producer, error) {
++}
++
++// Wyze cameras send a keyframe burst every 2 seconds, timed from the
++// start of the session. Cameras that start together keep bursting
++// together, which a shared 2.4 GHz link handles badly, so space the
++// session starts out.
++const wyzeDialSpacing = 500 * time.Millisecond
++
++var (
++	wyzeDialMu   sync.Mutex
++	wyzeDialNext time.Time
++)
++
++func wyzeDialSlot() {
++	wyzeDialMu.Lock()
++	now := time.Now()
++	if wyzeDialNext.Before(now) {
++		wyzeDialNext = now
++	}
++	wait := wyzeDialNext.Sub(now)
++	wyzeDialNext = wyzeDialNext.Add(wyzeDialSpacing)
++	wyzeDialMu.Unlock()
++
++	time.Sleep(wait)
++}
++
++func wyzeClient(rawURL string) (prod core.Producer, err error) {
++	// A camera sometimes ignores a session request, mostly right after a
++	// previous session ended. Another one, with fresh signaling
++	// credentials, normally goes through.
++	for attempt := 1; attempt <= 3; attempt++ {
++		if prod, err = wyzeDial(rawURL); err == nil {
++			return prod, nil
++		}
++		log.Debug().Err(err).Msgf("[webrtc] wyze dial attempt %d failed", attempt)
++	}
++	return nil, err
++}
++
++func wyzeDial(rawURL string) (core.Producer, error) {
++	wyzeDialSlot()
++
+ 	client := http.Client{Timeout: 5 * time.Second}
+ 	res, err := client.Get(rawURL)
+ 	if err != nil {
+@@ -230,6 +321,9 @@ func wyzeClient(rawURL string) (core.Producer, error) {
  		"client_id":   []string{kvs.ClientId},
  		"ice_servers": []string{string(kvs.Servers)},
  	}
