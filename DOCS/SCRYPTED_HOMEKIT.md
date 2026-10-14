@@ -49,19 +49,32 @@ link`), the defaults are expected to work.
 
 ## Floodlight switches
 
-The bridge exposes `GET/POST /api/cameras/<cam>/floodlight` (`{"on":bool}`).
+The bridge exposes `GET/POST /api/cameras/<cam>/floodlight`:
+`{"on":bool,"brightness":1-100,"motion":bool}`. A POST changes only the
+fields it carries. `motion` is the light's own motion activation (the
+camera keeps its duration and schedule). Setting `brightness` also turns
+the light on, as the Wyze app's slider does.
+
+The camera has a single brightness, shared with motion lighting: whatever
+Home's slider last set is what the light uses when motion triggers it (the
+Wyze app shows the same value). On/off alone never changes it. The camera
+cannot store a new brightness without lighting up, so restoring it quietly
+after a dimmed session is not possible. Create Home scenes with the lights at
+100%, or a scene will save and reapply its dimmed level.
+
 In Scrypted, create one script per floodlight (Scripts → Add Script):
 
 ```ts
 const url = 'http://127.0.0.1:5080/api/cameras/backyard_cam/floodlight';
-class Floodlight implements OnOff {
+class Floodlight implements OnOff, Brightness {
 constructor() { this.refresh(); }
-async refresh() { try { const r = await fetch(url); device.on = (await r.json()).on; } catch (e) { console.error('floodlight state', e); } }
-async set(on: boolean) { const r = await fetch(url, { method: 'POST', body: JSON.stringify({ on }) }); if (!r.ok) throw new Error(await r.text()); device.on = on; }
-turnOn() { return this.set(true); }
-turnOff() { return this.set(false); }
+async refresh() { try { const s = await (await fetch(url)).json(); device.on = s.on; device.brightness = s.brightness; } catch (e) { console.error('floodlight state', e); } }
+async send(body: any) { const r = await fetch(url, { method: 'POST', body: JSON.stringify(body) }); if (!r.ok) throw new Error(await r.text()); }
+async turnOn() { await this.send({ on: true }); device.on = true; }
+async turnOff() { await this.send({ on: false }); device.on = false; }
+async setBrightness(b: number) { await this.send({ brightness: Math.max(1, Math.round(b)) }); device.brightness = b; device.on = true; }
 }
-device.handleTypes(ScryptedInterface.OnOff);
+device.handleTypes(ScryptedInterface.OnOff, ScryptedInterface.Brightness);
 export default Floodlight;
 ```
 
@@ -69,3 +82,19 @@ Save and run it, set the device **Type** to Light, and enable the
 **HomeKit** extension. Lights are bridged accessories: pair the "Scrypted"
 bridge once (QR on the HomeKit plugin page) and every light added later
 appears in Home automatically.
+
+For a motion-activation switch per floodlight, add another script with
+**Type** Switch:
+
+```ts
+const url = 'http://127.0.0.1:5080/api/cameras/backyard_cam/floodlight';
+class MotionLight implements OnOff {
+constructor() { this.refresh(); }
+async refresh() { try { device.on = (await (await fetch(url)).json()).motion; } catch (e) { console.error('motion state', e); } }
+async set(on: boolean) { const r = await fetch(url, { method: 'POST', body: JSON.stringify({ motion: on }) }); if (!r.ok) throw new Error(await r.text()); device.on = on; }
+turnOn() { return this.set(true); }
+turnOff() { return this.set(false); }
+}
+device.handleTypes(ScryptedInterface.OnOff);
+export default MotionLight;
+```

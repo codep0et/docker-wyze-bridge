@@ -121,10 +121,12 @@ func TestFloodlight_GetReportsState(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
 		}
-		var resp map[string]bool
+		var resp struct {
+			On bool `json:"on"`
+		}
 		_ = json.NewDecoder(w.Body).Decode(&resp)
-		if resp["on"] != want {
-			t.Errorf("on = %v, want %v for %s", resp["on"], want, reply)
+		if resp.On != want {
+			t.Errorf("on = %v, want %v for %s", resp.On, want, reply)
 		}
 		if (*calls)[0].Code != 10788 {
 			t.Errorf("code = %d, want 10788", (*calls)[0].Code)
@@ -159,5 +161,62 @@ func TestFloodlight_RejectsBodyWithoutOn(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("go2rtc was called %d times for an invalid body", len(*calls))
+	}
+}
+
+func TestFloodlight_SetBrightnessAndMotionOnly(t *testing.T) {
+	srv, calls := floodlightServer(t, "HL_CFL2", `{"floodlightInfo":{"protocolVersion":"1","result":"1"}}`)
+
+	req := httptest.NewRequest("POST", "/api/cameras/yard/floodlight", bytes.NewBufferString(`{"brightness":50,"motion":false}`))
+	w := httptest.NewRecorder()
+	srv.handleAPICameraAction(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var sent floodlightInfo
+	_ = json.Unmarshal([]byte((*calls)[0].Payload), &sent)
+	f := sent.FloodlightInfo
+	if f.Brightness != "127" || f.MotionSwitch != "2" || f.ProtocolVersion != "1" {
+		t.Errorf("payload = %q, want brightness 127, motionSwitch 2, protocolVersion 1", (*calls)[0].Payload)
+	}
+	if f.Switch != "" {
+		t.Errorf("switch = %q, want it left out when on is not given", f.Switch)
+	}
+}
+
+func TestFloodlight_RejectsBrightnessOutOfRange(t *testing.T) {
+	for _, body := range []string{`{"brightness":0}`, `{"brightness":101}`} {
+		srv, calls := floodlightServer(t, "HL_CFL2", `{}`)
+
+		req := httptest.NewRequest("POST", "/api/cameras/yard/floodlight", bytes.NewBufferString(body))
+		w := httptest.NewRecorder()
+		srv.handleAPICameraAction(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", body, w.Code)
+		}
+		if len(*calls) != 0 {
+			t.Errorf("%s: go2rtc was called", body)
+		}
+	}
+}
+
+func TestFloodlight_GetReportsBrightnessAndMotion(t *testing.T) {
+	srv, _ := floodlightServer(t, "HL_CFL2",
+		`{"floodlightInfo":{"protocolVersion":"1","switch":"2","brightness":"127","motionSwitch":"1"}}`)
+
+	req := httptest.NewRequest("GET", "/api/cameras/yard/floodlight", nil)
+	w := httptest.NewRecorder()
+	srv.handleAPICameraAction(w, req)
+
+	var resp struct {
+		On         bool `json:"on"`
+		Brightness int  `json:"brightness"`
+		Motion     bool `json:"motion"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp.On || resp.Brightness != 50 || !resp.Motion {
+		t.Errorf("got %+v, want off, brightness 50, motion on", resp)
 	}
 }

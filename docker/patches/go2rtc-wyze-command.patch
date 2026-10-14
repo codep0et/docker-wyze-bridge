@@ -1,23 +1,97 @@
-diff --git a/internal/wyze/wyze.go b/internal/wyze/wyze.go
-index 982a16e..662ea54 100644
---- a/internal/wyze/wyze.go
-+++ b/internal/wyze/wyze.go
-@@ -37,6 +37,7 @@ func Init() {
- 	})
- 
- 	api.HandleFunc("api/wyze", apiWyze)
-+	api.HandleFunc("api/wyze/command", apiWyzeCommand)
- }
- 
- func getCloud(email string) (*wyze.Cloud, error) {
-@@ -200,3 +201,41 @@ func isAuthError(err error, target **wyze.AuthError) bool {
- 	}
- 	return false
- }
+diff --git a/internal/wyze/command.go b/internal/wyze/command.go
+new file mode 100644
+index 0000000..75ec2e3
+--- /dev/null
++++ b/internal/wyze/command.go
+@@ -0,0 +1,115 @@
++package wyze
 +
-+// apiWyzeCommand opens a short control session to a camera, sends one HL
-+// command and returns the camera's reply. It lets a controller switch
-+// things like the floodlight without holding a stream open.
++import (
++	"encoding/json"
++	"net/http"
++	"sync"
++	"time"
++
++	"github.com/AlexxIT/go2rtc/internal/api"
++	"github.com/AlexxIT/go2rtc/pkg/wyze"
++)
++
++// commandIdle is how long a control session stays open after its last
++// command. Cameras ignore a new session for a few seconds after the
++// previous one closes, so a controller that sets a value and then reads
++// it back needs the same session.
++const commandIdle = 20 * time.Second
++
++type commandSession struct {
++	mu     sync.Mutex
++	client *wyze.Client
++	timer  *time.Timer
++}
++
++var (
++	commandMu       sync.Mutex
++	commandSessions = map[string]*commandSession{}
++)
++
++func getCommandSession(url string) *commandSession {
++	commandMu.Lock()
++	defer commandMu.Unlock()
++	s := commandSessions[url]
++	if s == nil {
++		s = &commandSession{}
++		commandSessions[url] = s
++	}
++	return s
++}
++
++// command runs one HL command on the camera's control session, dialing
++// it if needed. A reused session that fails is redialed once, since the
++// camera may have dropped it while idle.
++func (s *commandSession) command(url string, code uint16, payload []byte) ([]byte, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++
++	for attempt := 0; ; attempt++ {
++		reused := s.client != nil
++		if !reused {
++			client, err := wyze.Dial(url)
++			if err != nil {
++				return nil, err
++			}
++			s.client = client
++		}
++
++		resp, err := s.client.Command(code, payload)
++		if err == nil {
++			s.touch()
++			return resp, nil
++		}
++		_ = s.client.Close()
++		s.client = nil
++		if !reused || attempt > 0 {
++			return nil, err
++		}
++	}
++}
++
++// touch restarts the idle timer. Called with s.mu held.
++func (s *commandSession) touch() {
++	if s.timer != nil {
++		s.timer.Stop()
++	}
++	s.timer = time.AfterFunc(commandIdle, func() {
++		s.mu.Lock()
++		defer s.mu.Unlock()
++		if s.client != nil {
++			_ = s.client.Close()
++			s.client = nil
++		}
++	})
++}
++
++// apiWyzeCommand sends one HL command to a camera and returns its reply.
++// It lets a controller switch things like the floodlight without holding
++// a stream open.
 +//
 +//	POST {"url":"wyze://...","code":10790,"payload":"{...}"}
 +//	200  {"payload":"{...}"}
@@ -37,14 +111,7 @@ index 982a16e..662ea54 100644
 +		return
 +	}
 +
-+	client, err := wyze.Dial(req.URL)
-+	if err != nil {
-+		http.Error(w, err.Error(), http.StatusBadGateway)
-+		return
-+	}
-+	defer client.Close()
-+
-+	resp, err := client.Command(req.Code, []byte(req.Payload))
++	resp, err := getCommandSession(req.URL).command(req.URL, req.Code, []byte(req.Payload))
 +	if err != nil {
 +		http.Error(w, err.Error(), http.StatusBadGateway)
 +		return
@@ -52,6 +119,18 @@ index 982a16e..662ea54 100644
 +
 +	api.ResponseJSON(w, map[string]string{"payload": string(resp)})
 +}
+diff --git a/internal/wyze/wyze.go b/internal/wyze/wyze.go
+index 982a16e..b687a8c 100644
+--- a/internal/wyze/wyze.go
++++ b/internal/wyze/wyze.go
+@@ -37,6 +37,7 @@ func Init() {
+ 	})
+ 
+ 	api.HandleFunc("api/wyze", apiWyze)
++	api.HandleFunc("api/wyze/command", apiWyzeCommand)
+ }
+ 
+ func getCloud(email string) (*wyze.Cloud, error) {
 diff --git a/pkg/wyze/command.go b/pkg/wyze/command.go
 new file mode 100644
 index 0000000..9a50c90
