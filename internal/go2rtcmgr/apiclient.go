@@ -1,12 +1,14 @@
 package go2rtcmgr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -205,4 +207,40 @@ func (c *APIClient) GetSnapshot(ctx context.Context, name string) ([]byte, error
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+// WyzeCommand sends one control command to a camera through go2rtc's
+// /api/wyze/command endpoint and returns the camera's reply payload.
+// go2rtc opens a short TUTK session for it, so no stream needs to be
+// running. Requires a go2rtc built with docker/patches/go2rtc-wyze-command.patch.
+func (c *APIClient) WyzeCommand(ctx context.Context, wyzeURL string, code uint16, payload string) (string, error) {
+	body, err := json.Marshal(map[string]interface{}{"url": wyzeURL, "code": code, "payload": payload})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/wyze/command", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("wyze command %d: %w", code, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("wyze command %d: %d %s", code, resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var out struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", fmt.Errorf("wyze command %d: decode: %w", code, err)
+	}
+	return out.Payload, nil
 }

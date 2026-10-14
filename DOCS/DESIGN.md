@@ -474,6 +474,8 @@ POST /api/cameras/{name}/quality body: {"quality":"hd"|"sd"}
 POST /api/cameras/{name}/audio   body: {"enabled":true|false}
 POST /api/cameras/{name}/record  body: {"action":"start"|"stop"} — toggles ffmpeg recorder
 POST /api/cameras/{name}/snapshot Force capture to SNAPSHOT_PATH
+GET  /api/cameras/{name}/floodlight JSON: {"on":bool} — HL_CFL2 only
+POST /api/cameras/{name}/floodlight body: {"on":true|false} — local TUTK command via go2rtc
 
 POST /api/discover               Re-poll Wyze API for added/removed cameras (202 + async)
 

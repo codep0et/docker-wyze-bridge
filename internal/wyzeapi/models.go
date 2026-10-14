@@ -24,6 +24,9 @@ type ModelSpec struct {
 	IsWebRTCStreamer bool
 	IsPan            bool
 	IsDoorbell       bool
+	// HasFloodlight: the camera carries a built-in floodlight that the
+	// Wyze cloud switches through property P1056.
+	HasFloodlight bool
 }
 
 // modelRegistry is the single source of truth for per-model routing.
@@ -37,7 +40,7 @@ var modelRegistry = map[string]ModelSpec{
 	"HL_PAN2":        {Name: "Pan V2", IsPan: true},
 	"HL_PAN3":        {Name: "Pan V3", IsPan: true},
 	"HL_PANP":        {Name: "Pan Pro", IsPan: true},
-	"HL_CFL2":        {Name: "Floodlight V2"},
+	"HL_CFL2":        {Name: "Floodlight V2", HasFloodlight: true},
 	"WYZEDB3":        {Name: "Doorbell", IsDoorbell: true},
 	"HL_DB2":         {Name: "Doorbell V2", IsDoorbell: true},
 	"GW_BE1":         {Name: "Doorbell Pro", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
@@ -241,6 +244,11 @@ func (c CameraInfo) IsPanCam() bool {
 // IsDoorbell returns true if this is a doorbell camera.
 func (c CameraInfo) IsDoorbell() bool {
 	return modelRegistry[c.Model].IsDoorbell
+}
+
+// HasFloodlight returns true if this camera has a cloud-switchable floodlight.
+func (c CameraInfo) HasFloodlight() bool {
+	return modelRegistry[c.Model].HasFloodlight
 }
 
 var nameCleanRE = regexp.MustCompile(`[^\w\-]+`)

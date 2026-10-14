@@ -101,6 +101,9 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 	reqCtx := r.Context()
 
 	switch {
+	case action == "floodlight":
+		s.handleFloodlight(w, r, cam.GetInfo())
+
 	case action == "restart" && r.Method == "POST":
 		s.camMgr.RestartStream(reqCtx, name)
 		writeJSON(w, map[string]string{"status": "ok"})

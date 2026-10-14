@@ -3,6 +3,8 @@
 # go2rtc-wyze-nat.patch lets the wyze:// source work from behind a userspace
 # NAT (Docker Desktop / OrbStack on macOS). It needs bridge networking with
 # a published UDP range and GO2RTC_WYZE_UDP_PORTS set to the same range.
+# go2rtc-wyze-command.patch adds POST /api/wyze/command, a one-shot TUTK
+# control session the bridge uses to switch the Floodlight V2 light.
 FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS go2rtc-fetch
 ARG GO2RTC_VERSION=1.9.14
 ARG TARGETARCH

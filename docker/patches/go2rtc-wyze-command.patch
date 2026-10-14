@@ -1,0 +1,89 @@
+diff --git a/internal/wyze/wyze.go b/internal/wyze/wyze.go
+index 982a16e..662ea54 100644
+--- a/internal/wyze/wyze.go
++++ b/internal/wyze/wyze.go
+@@ -37,6 +37,7 @@ func Init() {
+ 	})
+ 
+ 	api.HandleFunc("api/wyze", apiWyze)
++	api.HandleFunc("api/wyze/command", apiWyzeCommand)
+ }
+ 
+ func getCloud(email string) (*wyze.Cloud, error) {
+@@ -200,3 +201,41 @@ func isAuthError(err error, target **wyze.AuthError) bool {
+ 	}
+ 	return false
+ }
++
++// apiWyzeCommand opens a short control session to a camera, sends one HL
++// command and returns the camera's reply. It lets a controller switch
++// things like the floodlight without holding a stream open.
++//
++//	POST {"url":"wyze://...","code":10790,"payload":"{...}"}
++//	200  {"payload":"{...}"}
++func apiWyzeCommand(w http.ResponseWriter, r *http.Request) {
++	if r.Method != "POST" {
++		http.Error(w, "POST required", http.StatusMethodNotAllowed)
++		return
++	}
++
++	var req struct {
++		URL     string `json:"url"`
++		Code    uint16 `json:"code"`
++		Payload string `json:"payload"`
++	}
++	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" || req.Code == 0 {
++		http.Error(w, "url and code required", http.StatusBadRequest)
++		return
++	}
++
++	client, err := wyze.Dial(req.URL)
++	if err != nil {
++		http.Error(w, err.Error(), http.StatusBadGateway)
++		return
++	}
++	defer client.Close()
++
++	resp, err := client.Command(req.Code, []byte(req.Payload))
++	if err != nil {
++		http.Error(w, err.Error(), http.StatusBadGateway)
++		return
++	}
++
++	api.ResponseJSON(w, map[string]string{"payload": string(resp)})
++}
+diff --git a/pkg/wyze/command.go b/pkg/wyze/command.go
+new file mode 100644
+index 0000000..9a50c90
+--- /dev/null
++++ b/pkg/wyze/command.go
+@@ -0,0 +1,29 @@
++package wyze
++
++import (
++	"encoding/binary"
++	"fmt"
++	"time"
++)
++
++// Command sends one HL control command and waits for its response
++// (command code + 1). Returns the response payload without the HL header.
++func (c *Client) Command(code uint16, payload []byte) ([]byte, error) {
++	b := make([]byte, 16+len(payload))
++	copy(b, "HL")
++	b[2] = 5
++	binary.LittleEndian.PutUint16(b[4:], code)
++	binary.LittleEndian.PutUint16(b[6:], uint16(len(payload)))
++	copy(b[16:], payload)
++
++	resp, err := c.conn.WriteAndWaitIOCtrl(b, c.matchHL(code+1), 5*time.Second)
++	if err != nil {
++		return nil, err
++	}
++
++	hl := c.extractHL(resp)
++	if len(hl) < 16 {
++		return nil, fmt.Errorf("wyze: short response to command %d", code)
++	}
++	return hl[16:], nil
++}
