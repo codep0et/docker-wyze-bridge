@@ -712,6 +712,7 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, camMgr *camera.Manager
 
 	go2rtcBinary := findGo2RTCBinary()
 	mgr := go2rtcmgr.NewManager(go2rtcBinary, go2rtcConfigPath, go2rtcLog)
+	mgr.SetExtraConfig(cfg.Go2RTCExtraConfig)
 
 	if err := mgr.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("start go2rtc")

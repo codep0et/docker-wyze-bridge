@@ -30,6 +30,40 @@ every snapshot would wake it (~17 s cold start) and drain the battery.
 In the Home app pick **Stream** (not Stream and Record) for every camera;
 recording keeps the stream open for the hub's analysis.
 
+## Remote live view
+
+Home asks for a small stream when you watch from outside the home
+(640x360 at ~132 kbps on cellular, stepping up to 1280x720 at ~299 kbps
+when the link holds). Scrypted (without its paid NVR plugin) forwards the
+chosen stream as-is and cannot adapt, so:
+
+- the 2K stream (~1.4 Mbps) overwhelms the relay and freezes;
+- the 360p stream (~175 kbps) works but looks soft on a phone in
+  landscape;
+- a 720p stream encoded for the purpose works best.
+
+Make `<cam>_remote` with a go2rtc config file passed through
+`GO2RTC_EXTRA_CONFIG`:
+
+```yaml
+ffmpeg:
+  h264_remote: "-c:v libx264 -preset veryfast -tune zerolatency -x264-params sliced-threads=0 -profile:v main -b:v 280k -maxrate 300k -bufsize 600k -g 100 -keyint_min 100 -sc_threshold 0 -pix_fmt yuv420p"
+
+streams:
+  backyard_cam_remote: ffmpeg:backyard_cam_hd#video=h264_remote#width=1280#height=720#audio=copy
+```
+
+Then add `rtsp://127.0.0.1:8554/<cam>_remote` as the camera's third RTSP
+URL in Scrypted and set **Remote (Medium Resolution) Stream** to Stream 3.
+The encoder only runs while someone watches remotely (~40% of one core on
+an Apple silicon Mac).
+
+- `sliced-threads=0` is required: `-tune zerolatency` otherwise cuts each
+  frame into ~10 slices and Home never displays the stream.
+- x264 holds quality much better than `h264_videotoolbox` at ~300 kbps.
+- A keyframe every 5 s (`-g 100` at ~20 fps) spends fewer bits on refreshes;
+  start-up takes ~5 s.
+
 ## HomeKit plugin network settings (macOS)
 
 Scrypted's default mDNS advertiser (ciao) asks `networksetup

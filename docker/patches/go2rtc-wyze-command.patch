@@ -1,9 +1,9 @@
 diff --git a/internal/wyze/command.go b/internal/wyze/command.go
 new file mode 100644
-index 0000000..75ec2e3
+index 0000000..642d697
 --- /dev/null
 +++ b/internal/wyze/command.go
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,118 @@
 +package wyze
 +
 +import (
@@ -54,7 +54,10 @@ index 0000000..75ec2e3
 +	for attempt := 0; ; attempt++ {
 +		reused := s.client != nil
 +		if !reused {
-+			client, err := wyze.Dial(url)
++			// media=0: the camera must not start streaming for a
++			// control session, or it competes with live streams for
++			// the uplink.
++			client, err := wyze.Dial(url + "&media=0")
 +			if err != nil {
 +				return nil, err
 +			}
@@ -131,6 +134,39 @@ index 982a16e..b687a8c 100644
  }
  
  func getCloud(email string) (*wyze.Cloud, error) {
+diff --git a/pkg/wyze/client.go b/pkg/wyze/client.go
+index 0fe878e..63b63e5 100644
+--- a/pkg/wyze/client.go
++++ b/pkg/wyze/client.go
+@@ -61,6 +61,10 @@ type Client struct {
+ 	authKey string
+ 	verbose bool
+ 
++	// noMedia authenticates without starting the video and audio
++	// streams, for control-only sessions (?media=0).
++	noMedia bool
++
+ 	closed  bool
+ 	closeMu sync.Mutex
+ 
+@@ -96,6 +100,7 @@ func Dial(rawURL string) (*Client, error) {
+ 		mac:     query.Get("mac"),
+ 		model:   query.Get("model"),
+ 		verbose: query.Get("verbose") == "true",
++		noMedia: query.Get("media") == "0",
+ 	}
+ 
+ 	c.authKey = string(dtls.CalculateAuthKey(c.enr, c.mac))
+@@ -420,6 +425,9 @@ func (c *Client) buildK10002(challenge []byte, status byte) []byte {
+ 	copy(b[32:], sessionID)                                 // random session ID
+ 	b[36] = 1                                               // video enabled/disabled
+ 	b[37] = 1                                               // audio enabled/disabled
++	if c.noMedia {
++		b[36], b[37] = 0, 0
++	}
+ 	return b
+ }
+ 
 diff --git a/pkg/wyze/command.go b/pkg/wyze/command.go
 new file mode 100644
 index 0000000..9a50c90

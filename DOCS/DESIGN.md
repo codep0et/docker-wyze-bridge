@@ -780,6 +780,8 @@ WYZE_TOTP_KEY            string   TOTP seed for 2FA (optional)
 BRIDGE_IP               string   Host IP for WebRTC ICE candidates
 BRIDGE_PORT             int      WebUI port, default 5080
 STUN_SERVER         string   default "stun:stun.l.google.com:19302"
+GO2RTC_EXTRA_CONFIG string   extra go2rtc YAML merged over the generated config
+                             (custom streams, ffmpeg presets); ignored with GO2RTC_URL
 
 # ── WebUI Auth ───────────────────────────────────────────────────────────────
 BRIDGE_AUTH             bool     Enable WebUI auth, default false

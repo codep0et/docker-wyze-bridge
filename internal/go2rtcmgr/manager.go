@@ -20,6 +20,7 @@ type Manager struct {
 	log        zerolog.Logger
 	binaryPath string
 	configPath string
+	extraPath  string
 	apiURL     string
 	cmd        *exec.Cmd
 	ready      chan struct{}
@@ -36,6 +37,21 @@ func NewManager(binaryPath, configPath string, log zerolog.Logger) *Manager {
 		apiURL:     "http://127.0.0.1:1984",
 		ready:      make(chan struct{}),
 	}
+}
+
+// SetExtraConfig adds a user config file that go2rtc merges over the
+// generated one. Call before Start.
+func (m *Manager) SetExtraConfig(path string) {
+	m.extraPath = path
+}
+
+// args returns go2rtc's command-line arguments.
+func (m *Manager) args() []string {
+	args := []string{"-config", m.configPath}
+	if m.extraPath != "" {
+		args = append(args, "-config", m.extraPath)
+	}
+	return args
 }
 
 // APIURL returns the base URL for the go2rtc API.
@@ -64,7 +80,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
 
-	m.cmd = exec.CommandContext(ctx, m.binaryPath, "-config", m.configPath)
+	m.cmd = exec.CommandContext(ctx, m.binaryPath, m.args()...)
 	configureProcess(m.cmd)
 
 	stdout, err := m.cmd.StdoutPipe()

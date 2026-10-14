@@ -38,6 +38,10 @@ type Config struct {
 	// recording; the user manages that upstream.
 	Go2RTCURL string
 
+	// Extra go2rtc config file merged over the generated one (e.g.
+	// custom transcoded streams). Ignored with an external go2rtc.
+	Go2RTCExtraConfig string
+
 	// MQTT
 	MQTTEnabled        bool
 	MQTTHost           string
@@ -156,7 +160,8 @@ func Load() (*Config, error) {
 		StreamAuth: env("STREAM_AUTH", ""),
 
 		// External go2rtc (empty = spawn our own)
-		Go2RTCURL: env("GO2RTC_URL", ""),
+		Go2RTCURL:         env("GO2RTC_URL", ""),
+		Go2RTCExtraConfig: env("GO2RTC_EXTRA_CONFIG", ""),
 
 		// MQTT
 		MQTTEnabled:        envBool("MQTT_ENABLED", false),

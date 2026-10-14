@@ -25,6 +25,18 @@ func TestManager_NewManager(t *testing.T) {
 	}
 }
 
+func TestManager_ArgsWithExtraConfig(t *testing.T) {
+	m := NewManager("/usr/local/bin/go2rtc", "/config/go2rtc.yaml", zerolog.Nop())
+	if got := strings.Join(m.args(), " "); got != "-config /config/go2rtc.yaml" {
+		t.Errorf("args = %q, want only the generated config", got)
+	}
+
+	m.SetExtraConfig("/config/extra.yaml")
+	if got := strings.Join(m.args(), " "); got != "-config /config/go2rtc.yaml -config /config/extra.yaml" {
+		t.Errorf("args = %q, want the extra config after the generated one", got)
+	}
+}
+
 func TestManager_IsHealthy_NoServer(t *testing.T) {
 	m := NewManager("", "", zerolog.Nop())
 	m.apiURL = "http://localhost:19998" // unlikely to be listening
